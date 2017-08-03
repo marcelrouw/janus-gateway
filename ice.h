@@ -357,6 +357,10 @@ struct janus_ice_stream {
 	guint32 audio_ssrc_peer;
 	/*! \brief Video SSRC of the peer for this stream (may be bundled) */
 	guint32 video_ssrc_peer;
+
+  gboolean audio_ssrc_peer_bye_received;
+  gboolean video_ssrc_peer_bye_received;
+
 	/*! \brief Video retransmissions SSRC of the peer for this stream (may be bundled) */
 	guint32 video_ssrc_peer_rtx;
 	/*! \brief List of payload types we can expect for audio */

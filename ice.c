@@ -2920,12 +2920,14 @@ int janus_ice_setup_local(janus_ice_handle *handle, int offer, int audio, int vi
 		audio_stream->dtls_role = offer ? JANUS_DTLS_ROLE_CLIENT : JANUS_DTLS_ROLE_ACTPASS;
 		audio_stream->audio_ssrc = janus_random_uint32();	/* FIXME Should we look for conflicts? */
 		audio_stream->audio_ssrc_peer = 0;	/* FIXME Right now we don't know what this will be */
+		audio_stream->audio_ssrc_peer_bye_received = FALSE;
 		audio_stream->video_ssrc = 0;
 		if(janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_BUNDLE)) {
 			/* If we're bundling, this stream is going to be used for video as well */
 			audio_stream->video_ssrc = janus_random_uint32();	/* FIXME Should we look for conflicts? */
 		}
 		audio_stream->video_ssrc_peer = 0;	/* FIXME Right now we don't know what this will be */
+		audio_stream->video_ssrc_peer_bye_received = FALSE;
 		audio_stream->video_ssrc_peer_rtx = 0;	/* FIXME Right now we don't know what this will be */
 		audio_stream->audio_rtcp_ctx = g_malloc0(sizeof(rtcp_context));
 		audio_stream->audio_rtcp_ctx->tb = 48000;	/* May change later */
@@ -3083,9 +3085,11 @@ int janus_ice_setup_local(janus_ice_handle *handle, int offer, int audio, int vi
 		video_stream->dtls_role = offer ? JANUS_DTLS_ROLE_CLIENT : JANUS_DTLS_ROLE_ACTPASS;
 		video_stream->video_ssrc = janus_random_uint32();	/* FIXME Should we look for conflicts? */
 		video_stream->video_ssrc_peer = 0;	/* FIXME Right now we don't know what this will be */
+		video_stream->video_ssrc_peer_bye_received = FALSE;
 		video_stream->video_ssrc_peer_rtx = 0;	/* FIXME Right now we don't know what this will be */
 		video_stream->audio_ssrc = 0;
 		video_stream->audio_ssrc_peer = 0;
+		video_stream->audio_ssrc_peer_bye_received = FALSE;
 		video_stream->video_rtcp_ctx = g_malloc0(sizeof(rtcp_context));
 		video_stream->video_rtcp_ctx->tb = 90000;
 		video_stream->components = g_hash_table_new(NULL, NULL);
@@ -3269,6 +3273,8 @@ int janus_ice_setup_local(janus_ice_handle *handle, int offer, int audio, int vi
 		data_stream->cdone = 0;
 		data_stream->payload_type = -1;
 		data_stream->disabled = FALSE;
+		data_stream->audio_ssrc_peer_bye_received = FALSE;
+		data_stream->video_ssrc_peer_bye_received = FALSE;
 		/* FIXME By default, if we're being called we're DTLS clients, but this may be changed by ICE... */
 		data_stream->dtls_role = offer ? JANUS_DTLS_ROLE_CLIENT : JANUS_DTLS_ROLE_ACTPASS;
 		data_stream->components = g_hash_table_new(NULL, NULL);
