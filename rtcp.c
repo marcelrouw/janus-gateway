@@ -567,10 +567,10 @@ int janus_rtcp_has_bye(char *packet, int len, guint32 video_ssrc_peer, guint32 a
 				bye = (rtcp_bye_t*)rtcp;
 				JANUS_LOG(LOG_DBG, "BYE SSRC %u\n", ntohl(bye->ssrc[0]));
 				if (video_ssrc_peer == bye->ssrc[0]) {
-					video_ssrc_peer_bye_received = TRUE;
+					*video_ssrc_peer_bye_received = TRUE;
 				}
 				if (audio_ssrc_peer == bye->ssrc[0]) {
-					audio_ssrc_peer_bye_received = TRUE;
+					*audio_ssrc_peer_bye_received = TRUE;
 				}
 				if (video_ssrc_peer_bye_received == TRUE && audio_ssrc_peer_bye_received == TRUE) {
 					got_bye = TRUE;
