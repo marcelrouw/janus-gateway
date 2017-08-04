@@ -551,8 +551,10 @@ int janus_rtcp_report_block(rtcp_context *ctx, report_block *rb) {
 }
 
 
-int janus_rtcp_has_bye(char *packet, int len) {
+int janus_rtcp_has_bye(char *packet, int len, janus_ice_stream *stream) {
 	gboolean got_bye = FALSE;
+
+	JANUS_LOG(LOG_DBG, "%p remote SSRC: video=%u, audio=%u\n", stream, stream->video_ssrc_peer, stream->audio_ssrc_peer);
 	/* Parse RTCP compound packet */
 	rtcp_header *rtcp = (rtcp_header *)packet;
 	if(rtcp->version != 2)
@@ -562,6 +564,8 @@ int janus_rtcp_has_bye(char *packet, int len) {
 		pno++;
 		switch(rtcp->type) {
 			case RTCP_BYE:
+				rtcp_bye_t *bye = (rtcp_bye_t*)rtcp;
+				JANUS_LOG(LOG_DBG, "BYE SSRC %u\n", ntohl(bye->ssrc[0]));
 				got_bye = TRUE;
 				break;
 			default:
