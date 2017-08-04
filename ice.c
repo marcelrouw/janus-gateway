@@ -2219,7 +2219,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 			} else {
 				/* Check if there's an RTCP BYE: in case, let's wrap up */
 				JANUS_LOG(LOG_DBG, "%p remote SSRC: video=%u, audio=%u\n", stream, stream->video_ssrc_peer, stream->audio_ssrc_peer);
-				if(janus_rtcp_has_bye(buf, buflen, stream)) {
+				if(janus_rtcp_has_bye(buf, buflen)) {
 					JANUS_LOG(LOG_VERB, "[%"SCNu64"] Got RTCP BYE on stream %"SCNu16" (component %"SCNu16"), closing...\n", handle->handle_id, stream->stream_id, component->component_id);
 					// janus_ice_webrtc_hangup(handle, "RTCP BYE");
 					return;
