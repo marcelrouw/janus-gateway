@@ -307,7 +307,7 @@ int janus_rtcp_report_block(rtcp_context *ctx, report_block *rb);
  * @param[in] packet The message data
  * @param[in] len The message data length in bytes
  * @returns TRUE in case of success, FALSE otherwise */
-gboolean janus_rtcp_has_bye(char *packet, int len);
+gboolean janus_rtcp_has_bye(char *packet, int len, guint32 video_ssrc_peer, guint32 audio_ssrc_peer, gboolean &video_ssrc_peer_bye_received, gboolean &audio_ssrc_peer_bye_received);
 
 /*! \brief Method to check whether an RTCP message contains a FIR request
  * @param[in] packet The message data
