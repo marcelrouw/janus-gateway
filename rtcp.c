@@ -563,9 +563,9 @@ int janus_rtcp_has_bye(char *packet, int len) {
 		pno++;
 		switch(rtcp->type) {
 			case RTCP_BYE:
+				got_bye = TRUE;
 				rtcp_bye_t *bye = (rtcp_bye_t*)rtcp;
 				JANUS_LOG(LOG_DBG, "BYE SSRC %u\n", ntohl(bye->ssrc[0]));
-				got_bye = TRUE;
 				break;
 			default:
 				break;
