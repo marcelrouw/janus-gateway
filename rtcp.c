@@ -572,7 +572,7 @@ int janus_rtcp_has_bye(char *packet, int len, guint32 video_ssrc_peer, guint32 a
 				if (audio_ssrc_peer == bye->ssrc[0]) {
 					*audio_ssrc_peer_bye_received = TRUE;
 				}
-				if (video_ssrc_peer_bye_received == TRUE && audio_ssrc_peer_bye_received == TRUE) {
+				if (*video_ssrc_peer_bye_received == TRUE && *audio_ssrc_peer_bye_received == TRUE) {
 					got_bye = TRUE;
 				}
 				break;
