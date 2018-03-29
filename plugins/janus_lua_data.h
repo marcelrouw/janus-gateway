@@ -49,6 +49,38 @@ extern janus_callbacks *janus_core;
 extern lua_State *lua_state;
 extern janus_mutex lua_mutex;
 
+/* If you need any additional property add them below this line */
+typedef struct janus_play_frame_packet {
+	uint16_t seq;	/* RTP Sequence number */
+	uint64_t ts;	/* RTP Timestamp */
+	int len;		/* Length of the data */
+	long offset;	/* Offset of the data in the file */
+	struct janus_play_frame_packet *next;
+	struct janus_play_frame_packet *prev;
+} janus_play_frame_packet;
+
+typedef struct janus_play_recording {
+	gboolean stop_playing;
+	// guint64 id;					/* Recording unique ID */
+	// char *name;					/* Name of the recording */
+	// char *date;					/* Time of the recording */
+	char *arc_file;				/* Audio file name */
+	char *arc_path;				/* Audio file path */
+	// const char *acodec;			/* Codec used for audio, if available */
+	int audio_pt;				/* Payload types to use for audio when playing recordings */
+	char *vrc_file;				/* Video file name */
+	char *vrc_path;				/* Video file path */
+	// const char *vcodec;			/* Codec used for video, if available */
+	int video_pt;				/* Payload types to use for audio when playing recordings */
+	// char *offer;				/* The SDP offer that will be sent to watchers */
+	// GList *viewers;				/* List of users watching this recording */
+	volatile gint completed;	/* Whether this recording was completed or still going on */
+	volatile gint destroyed;	/* Whether this recording has been marked as destroyed */
+	janus_refcount ref;			/* Reference counter */
+	janus_mutex mutex;			/* Mutex for this recording */
+} janus_play_recording;
+
+
 /* Lua session: we keep only the barebone stuff here, the rest will be in the Lua script */
 typedef struct janus_lua_session {
 	janus_plugin_session *handle;		/* Pointer to the core-plugin session */
@@ -74,6 +106,14 @@ typedef struct janus_lua_session {
 	volatile gint hangingup;			/* Whether this session's PeerConnection is hanging up */
 	volatile gint destroyed;			/* Whether this session's been marked as destroyed */
 	/* If you need any additional property (e.g., for hooks you added in janus_lua_extra.c) add them below this line */
+
+	gboolean active;
+	gboolean recorder;		/* Whether this session is used to record or to replay a WebRTC session */
+	janus_play_recording *recording;
+	janus_play_frame_packet *aframes;	/* Audio frames (for playout) */
+	janus_play_frame_packet *vframes;	/* Video frames (for playout) */
+	lua_State *lua_state;
+	char *transaction_id;
 
 	/* Reference counter */
 	janus_refcount ref;
