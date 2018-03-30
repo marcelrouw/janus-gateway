@@ -193,9 +193,9 @@ function processRequest(id, tr, msg)
 
 		logger.print("startRecording id: " .. id .. " fnbase: " .. fnbase .. " -- " .. msg["file"])
 		startRecording(id,
-			"audio", "opus", "/Users/marcel/janus", fnbase .. "audio",
-			"video", "vp8", "/Users/marcel/janus", fnbase .. "video"
-			-- "data", "text", "/Users/marcel/janus", fnbase .. "data"
+			"audio", "opus", "/tmp", fnbase .. "audio",
+			"video", "vp8", "/tmp", fnbase .. "video"
+			-- "data", "text", "/tmp", fnbase .. "data"
 		)
 	elseif msg["record"] == false then
 		stopRecording(id, "audio", "video", "data")
@@ -206,16 +206,16 @@ function processRequest(id, tr, msg)
 		-- local jsonevent = json.encode(event)
 		-- pushEvent(id, tr, jsonevent, nil)
 		-- startPlaying(id, tr,
-		-- 	"/Users/marcel/janus", "rec-5162561637200768-audio",
-		-- 	"/Users/marcel/janus", "rec-5162561637200768-video"
+		-- 	"/tmp", "rec-5162561637200768-audio",
+		-- 	"/tmp", "rec-5162561637200768-video"
 		-- )
 		-- startPlaying(id, tr,
-		-- 	"/Users/marcel/janus", "lua-echotest-1336105117--audio",
-		-- 	"/Users/marcel/janus", "lua-echotest-1336105117--audio"
+		-- 	"/tmp", "lua-echotest-1336105117--audio",
+		-- 	"/tmp", "lua-echotest-1336105117--audio"
 		-- )
 		-- startPlaying(id, tr,
-		-- 	"/Users/marcel/janus", "lua-echotest-633500220--audio",
-		-- 	"/Users/marcel/janus", "lua-echotest-633500220--video"
+		-- 	"/tmp", "lua-echotest-633500220--audio",
+		-- 	"/tmp", "lua-echotest-633500220--video"
 		-- )
 
 		local fnbase = msg["filename"]
@@ -223,8 +223,8 @@ function processRequest(id, tr, msg)
 			fnbase = "lua-echotest-" .. id .. "-" -- .. require 'socket'.gettime()
 		end
 		startPlaying(id, tr,
-			"/Users/marcel/janus", fnbase .. "audio",
-			"/Users/marcel/janus", fnbase .. "video"
+			"/tmp", fnbase .. "audio",
+			"/tmp", fnbase .. "video"
 		)
 	elseif msg["play"] == false then
 		logger.print("play false 2")
