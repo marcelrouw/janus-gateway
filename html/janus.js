@@ -25,8 +25,6 @@
 // List of sessions
 Janus.sessions = {};
 
-// Screensharing Chrome Extension ID
-Janus.extensionId = "hapfgfdkleiggjjpfpenajgdnfckjpaj";
 Janus.isExtensionEnabled = function() {
 	if(window.navigator.userAgent.match('Chrome')) {
 		var chromever = parseInt(window.navigator.userAgent.match(/Chrome\/(.*) /)[1], 10);
@@ -37,10 +35,50 @@ Janus.isExtensionEnabled = function() {
 			// Older versions of Chrome don't support this extension-based approach, so lie
 			return true;
 		}
-		return Janus.checkJanusExtension();
+		return Janus.extension.isInstalled();
 	} else {
 		// Firefox of others, no need for the extension (but this doesn't mean it will work)
 		return true;
+	}
+};
+
+var defaultExtension = {
+	// Screensharing Chrome Extension ID
+	extensionId: 'hapfgfdkleiggjjpfpenajgdnfckjpaj',
+	isInstalled: function() { return document.querySelector('#janus-extension-installed') !== null; },
+	getScreen: function (callback) {
+		var pending = window.setTimeout(function () {
+			error = new Error('NavigatorUserMediaError');
+			error.name = 'The required Chrome extension is not installed: click <a href="#">here</a> to install it. (NOTE: this will need you to refresh the page)';
+			return callback(error);
+		}, 1000);
+		this.cache[pending] = callback;
+		window.postMessage({ type: 'janusGetScreen', id: pending }, '*');
+	},
+	init: function () {
+		var cache = {};
+		this.cache = cache;
+		// Wait for events from the Chrome Extension
+		window.addEventListener('message', function (event) {
+			if(event.origin != window.location.origin)
+				return;
+			if(event.data.type == 'janusGotScreen' && cache[event.data.id]) {
+				var callback = cache[event.data.id];
+				delete cache[event.data.id];
+
+				if (event.data.sourceId === '') {
+					// user canceled
+					var error = new Error('NavigatorUserMediaError');
+					error.name = 'You cancelled the request for permission, giving up...';
+					callback(error);
+				} else {
+					callback(null, event.data.sourceId);
+				}
+			} else if (event.data.type == 'janusGetScreenPending') {
+				console.log('clearing ', event.data.id);
+				window.clearTimeout(event.data.id);
+			}
+		});
 	}
 };
 
@@ -48,10 +86,11 @@ Janus.useDefaultDependencies = function (deps) {
 	var f = (deps && deps.fetch) || fetch;
 	var p = (deps && deps.Promise) || Promise;
 	var socketCls = (deps && deps.WebSocket) || WebSocket;
+
 	return {
 		newWebSocket: function(server, proto) { return new socketCls(server, proto); },
+		extension: (deps && deps.extension) || defaultExtension,
 		isArray: function(arr) { return Array.isArray(arr); },
-		checkJanusExtension: function() { return document.querySelector('#janus-extension-installed') !== null; },
 		webRTCAdapter: (deps && deps.adapter) || adapter,
 		httpAPICall: function(url, options) {
 			var fetchOptions = {
@@ -120,7 +159,7 @@ Janus.useOldDependencies = function (deps) {
 	return {
 		newWebSocket: function(server, proto) { return new socketCls(server, proto); },
 		isArray: function(arr) { return jq.isArray(arr); },
-		checkJanusExtension: function() { return jq('#janus-extension-installed').length > 0; },
+		extension: (deps && deps.extension) || defaultExtension,
 		webRTCAdapter: (deps && deps.adapter) || adapter,
 		httpAPICall: function(url, options) {
 			var payload = options.body !== undefined ? {
@@ -212,8 +251,9 @@ Janus.init = function(options) {
 		Janus.isArray = usedDependencies.isArray;
 		Janus.webRTCAdapter = usedDependencies.webRTCAdapter;
 		Janus.httpAPICall = usedDependencies.httpAPICall;
-		Janus.checkJanusExtension = usedDependencies.checkJanusExtension;
 		Janus.newWebSocket = usedDependencies.newWebSocket;
+		Janus.extension = usedDependencies.extension;
+		Janus.extension.init();
 
 		// Helper method to enumerate devices
 		Janus.listDevices = function(callback, config) {
@@ -381,6 +421,17 @@ function Janus(gatewayCallbacks) {
 	this.destroyOnUnload = true;
 	if(gatewayCallbacks.destroyOnUnload !== undefined && gatewayCallbacks.destroyOnUnload !== null)
 		this.destroyOnUnload = (gatewayCallbacks.destroyOnUnload === true);
+	// Some timeout-related values
+	var keepAlivePeriod = 25000;
+	if(gatewayCallbacks.keepAlivePeriod !== undefined && gatewayCallbacks.keepAlivePeriod !== null)
+		keepAlivePeriod = gatewayCallbacks.keepAlivePeriod;
+	if(isNaN(keepAlivePeriod))
+		keepAlivePeriod = 25000;
+	var longPollTimeout = 60000;
+	if(gatewayCallbacks.longPollTimeout !== undefined && gatewayCallbacks.longPollTimeout !== null)
+		longPollTimeout = gatewayCallbacks.longPollTimeout;
+	if(isNaN(longPollTimeout))
+		longPollTimeout = 60000;
 
 	var connected = false;
 	var sessionId = null;
@@ -393,6 +444,13 @@ function Janus(gatewayCallbacks) {
 	// Public methods
 	this.getServer = function() { return server; };
 	this.isConnected = function() { return connected; };
+	this.reconnect = function(callbacks) {
+		callbacks = callbacks || {};
+		callbacks.success = (typeof callbacks.success == "function") ? callbacks.success : Janus.noop;
+		callbacks.error = (typeof callbacks.error == "function") ? callbacks.error : Janus.noop;
+		callbacks["reconnect"] = true;
+		createSession(callbacks);
+	};
 	this.getSessionId = function() { return sessionId; };
 	this.destroy = function(callbacks) { destroySession(callbacks); };
 	this.attach = function(callbacks) { createHandle(callbacks); };
@@ -416,7 +474,7 @@ function Janus(gatewayCallbacks) {
 			verb: 'GET',
 			withCredentials: withCredentials,
 			success: handleEvent,
-			timeout: 60000,	// FIXME
+			timeout: longPollTimeout,
 			error: function(textStatus, errorThrown) {
 				Janus.error(textStatus + ":", errorThrown);
 				retries++;
@@ -644,7 +702,7 @@ function Janus(gatewayCallbacks) {
 	function keepAlive() {
 		if(server === null || !websockets || !connected)
 			return;
-		wsKeepaliveTimeoutId = setTimeout(keepAlive, 30000);
+		wsKeepaliveTimeoutId = setTimeout(keepAlive, keepAlivePeriod);
 		var request = { "janus": "keepalive", "session_id": sessionId, "transaction": Janus.randomString(12) };
 		if(token !== null && token !== undefined)
 			request["token"] = token;
@@ -657,6 +715,22 @@ function Janus(gatewayCallbacks) {
 	function createSession(callbacks) {
 		var transaction = Janus.randomString(12);
 		var request = { "janus": "create", "transaction": transaction };
+		if(callbacks["reconnect"]) {
+			// We're reconnecting, claim the session
+			connected = false;
+			request["janus"] = "claim";
+			request["session_id"] = sessionId;
+			// If we were using websockets, ignore the old connection
+			if(ws) {
+				ws.onopen = null;
+				ws.onerror = null;
+				ws.onclose = null;
+				if(wsKeepaliveTimeoutId) {
+					clearTimeout(wsKeepaliveTimeoutId);
+					wsKeepaliveTimeoutId = null;
+				}
+			}
+		}
 		if(token !== null && token !== undefined)
 			request["token"] = token;
 		if(apisecret !== null && apisecret !== undefined)
@@ -703,10 +777,14 @@ function Janus(gatewayCallbacks) {
 							callbacks.error(json["error"].reason);
 							return;
 						}
-						wsKeepaliveTimeoutId = setTimeout(keepAlive, 30000);
+						wsKeepaliveTimeoutId = setTimeout(keepAlive, keepAlivePeriod);
 						connected = true;
-						sessionId = json.data["id"];
-						Janus.log("Created session: " + sessionId);
+						sessionId = json["session_id"] ? json["session_id"] : json.data["id"];
+						if(callbacks["reconnect"]) {
+							Janus.log("Claimed session: " + sessionId);
+						} else {
+							Janus.log("Created session: " + sessionId);
+						}
 						Janus.sessions[sessionId] = that;
 						callbacks.success();
 					};
@@ -745,8 +823,12 @@ function Janus(gatewayCallbacks) {
 					return;
 				}
 				connected = true;
-				sessionId = json.data["id"];
-				Janus.log("Created session: " + sessionId);
+				sessionId = json["session_id"] ? json["session_id"] : json.data["id"];
+				if(callbacks["reconnect"]) {
+					Janus.log("Claimed session: " + sessionId);
+				} else {
+					Janus.log("Created session: " + sessionId);
+				}
 				Janus.sessions[sessionId] = that;
 				eventHandler();
 				callbacks.success();
@@ -1388,7 +1470,7 @@ function Janus(gatewayCallbacks) {
 					stream.getAudioTracks() && stream.getAudioTracks().length) {
 				config.myStream.addTrack(stream.getAudioTracks()[0]);
 				if(media.replaceAudio && Janus.webRTCAdapter.browserDetails.browser === "firefox") {
-					Janus.log("Adding audio track:", stream.getAudioTracks()[0]);
+					Janus.log("Replacing audio track:", stream.getAudioTracks()[0]);
 					for(var index in config.pc.getSenders()) {
 						var s = config.pc.getSenders()[index];
 						if(s && s.track && s.track.kind === "audio") {
@@ -1396,8 +1478,30 @@ function Janus(gatewayCallbacks) {
 						}
 					}
 				} else {
-					Janus.log((media.replaceAudio ? "Replacing" : "Adding") + " audio track:", stream.getAudioTracks()[0]);
-					config.pc.addTrack(stream.getAudioTracks()[0], stream);
+					if(Janus.webRTCAdapter.browserDetails.browser === "firefox" && Janus.webRTCAdapter.browserDetails.version >= 59) {
+						// Firefox >= 59 uses Transceivers
+						Janus.log((media.replaceVideo ? "Replacing" : "Adding") + " video track:", stream.getVideoTracks()[0]);
+						var audioTransceiver = null;
+						var transceivers = config.pc.getTransceivers();
+						if(transceivers && transceivers.length > 0) {
+							for(var i in transceivers) {
+								var t = transceivers[i];
+								if((t.sender && t.sender.track && t.sender.track.kind === "audio") ||
+										(t.receiver && t.receiver.track && t.receiver.track.kind === "audio")) {
+									audioTransceiver = t;
+									break;
+								}
+							}
+						}
+						if(audioTransceiver && audioTransceiver.sender) {
+							audioTransceiver.sender.replaceTrack(stream.getVideoTracks()[0]);
+						} else {
+							config.pc.addTrack(stream.getVideoTracks()[0], stream);
+						}
+					} else {
+						Janus.log((media.replaceAudio ? "Replacing" : "Adding") + " audio track:", stream.getAudioTracks()[0]);
+						config.pc.addTrack(stream.getAudioTracks()[0], stream);
+					}
 				}
 			}
 			if(((!media.update && isVideoSendEnabled(media)) || (media.update && (media.addVideo || media.replaceVideo))) &&
@@ -1412,8 +1516,30 @@ function Janus(gatewayCallbacks) {
 						}
 					}
 				} else {
-					Janus.log((media.replaceVideo ? "Replacing" : "Adding") + " video track:", stream.getVideoTracks()[0]);
-					config.pc.addTrack(stream.getVideoTracks()[0], stream);
+					if(Janus.webRTCAdapter.browserDetails.browser === "firefox" && Janus.webRTCAdapter.browserDetails.version >= 59) {
+						// Firefox >= 59 uses Transceivers
+						Janus.log((media.replaceVideo ? "Replacing" : "Adding") + " video track:", stream.getVideoTracks()[0]);
+						var videoTransceiver = null;
+						var transceivers = config.pc.getTransceivers();
+						if(transceivers && transceivers.length > 0) {
+							for(var i in transceivers) {
+								var t = transceivers[i];
+								if((t.sender && t.sender.track && t.sender.track.kind === "video") ||
+										(t.receiver && t.receiver.track && t.receiver.track.kind === "video")) {
+									videoTransceiver = t;
+									break;
+								}
+							}
+						}
+						if(videoTransceiver && videoTransceiver.sender) {
+							videoTransceiver.sender.replaceTrack(stream.getVideoTracks()[0]);
+						} else {
+							config.pc.addTrack(stream.getVideoTracks()[0], stream);
+						}
+					} else {
+						Janus.log((media.replaceVideo ? "Replacing" : "Adding") + " video track:", stream.getVideoTracks()[0]);
+						config.pc.addTrack(stream.getVideoTracks()[0], stream);
+					}
 				}
 			}
 		}
@@ -1425,8 +1551,6 @@ function Janus(gatewayCallbacks) {
 				"optional": [{"DtlsSrtpKeyAgreement": true}]
 			};
 			if(ipv6Support === true) {
-				// FIXME This is only supported in Chrome right now
-				// For support in Firefox track this: https://bugzilla.mozilla.org/show_bug.cgi?id=797262
 				pc_constraints.optional.push({"googIPv6":true});
 			}
 			// Any custom constraint to add?
@@ -1500,7 +1624,10 @@ function Janus(gatewayCallbacks) {
 		}
 		if(addTracks && stream !== null && stream !== undefined) {
 			Janus.log('Adding local stream');
-			stream.getTracks().forEach(function(track) { config.pc.addTrack(track, stream); });
+			stream.getTracks().forEach(function(track) {
+				Janus.log('Adding local track:', track);
+				config.pc.addTrack(track, stream);
+			});
 		}
 		// Any data channel to create?
 		if(isDataEnabled(media) && !config.dataChannel) {
@@ -1794,11 +1921,21 @@ function Janus(gatewayCallbacks) {
 							height = 180;
 							maxHeight = 180;
 							width = 320;
-						} else if(media.video === 'hires' || media.video === 'hires-16:9' ) {
-							// High resolution is only 16:9
+						} else if(media.video === 'hires' || media.video === 'hires-16:9' || media.video === 'hdres') {
+							// High(HD) resolution is only 16:9
 							height = 720;
 							maxHeight = 720;
 							width = 1280;
+						} else if(media.video === 'fhdres') {
+							// Full HD resolution is only 16:9
+							height = 1080;
+							maxHeight = 1080;
+							width = 1920;
+						} else if(media.video === '4kres') {
+							// 4K resolution is only 16:9
+							height = 2160;
+							maxHeight = 2160;
+							width = 3840;
 						} else if(media.video === 'stdres') {
 							// Normal resolution, 4:3
 							height = 480;
@@ -1836,11 +1973,10 @@ function Janus(gatewayCallbacks) {
 					}
 					// We're going to try and use the extension for Chrome 34+, the old approach
 					// for older versions of Chrome, or the experimental support in Firefox 33+
-					var cache = {};
 					function callbackUserMedia (error, stream) {
 						pluginHandle.consentDialog(false);
 						if(error) {
-							callbacks.error({code: error.code, name: error.name, message: error.message});
+							callbacks.error(error);
 						} else {
 							streamsDone(handleId, jsep, media, callbacks, stream);
 						}
@@ -1885,15 +2021,30 @@ function Janus(gatewayCallbacks) {
 							getScreenMedia(constraints, callbackUserMedia);
 						} else {
 							// Chrome 34+ requires an extension
-							var pending = window.setTimeout(
-								function () {
-									error = new Error('NavigatorUserMediaError');
-									error.name = 'The required Chrome extension is not installed: click <a href="#">here</a> to install it. (NOTE: this will need you to refresh the page)';
+							Janus.extension.getScreen(function (error, sourceId) {
+								if (error) {
 									pluginHandle.consentDialog(false);
 									return callbacks.error(error);
-								}, 1000);
-							cache[pending] = [callbackUserMedia, null];
-							window.postMessage({ type: 'janusGetScreen', id: pending }, '*');
+								}
+								constraints = {
+									audio: false,
+									video: {
+										mandatory: {
+											chromeMediaSource: 'desktop',
+											maxWidth: window.screen.width,
+											maxHeight: window.screen.height,
+											minFrameRate: media.screenshareFrameRate,
+											maxFrameRate: media.screenshareFrameRate,
+										},
+										optional: [
+											{googLeakyBucket: true},
+											{googTemporalLayeredScreencast: true}
+										]
+									}
+								};
+								constraints.video.mandatory.chromeMediaSourceId = event.data.sourceId;
+								getScreenMedia(constraints, callbackUserMedia, isAudioSendEnabled(media));
+							});
 						}
 					} else if (window.navigator.userAgent.match('Firefox')) {
 						var ffver = parseInt(window.navigator.userAgent.match(/Firefox\/(.*)/)[1], 10);
@@ -1932,46 +2083,6 @@ function Janus(gatewayCallbacks) {
 							return;
 						}
 					}
-
-					// Wait for events from the Chrome Extension
-					window.addEventListener('message', function (event) {
-						if(event.origin != window.location.origin)
-							return;
-						if(event.data.type == 'janusGotScreen' && cache[event.data.id]) {
-							var data = cache[event.data.id];
-							var callback = data[0];
-							delete cache[event.data.id];
-
-							if (event.data.sourceId === '') {
-								// user canceled
-								var error = new Error('NavigatorUserMediaError');
-								error.name = 'You cancelled the request for permission, giving up...';
-								pluginHandle.consentDialog(false);
-								callbacks.error(error);
-							} else {
-								constraints = {
-									audio: false,
-									video: {
-										mandatory: {
-											chromeMediaSource: 'desktop',
-											maxWidth: window.screen.width,
-											maxHeight: window.screen.height,
-											minFrameRate: media.screenshareFrameRate,
-											maxFrameRate: media.screenshareFrameRate,
-										},
-										optional: [
-											{googLeakyBucket: true},
-											{googTemporalLayeredScreencast: true}
-										]
-									}
-								};
-								constraints.video.mandatory.chromeMediaSourceId = event.data.sourceId;
-								getScreenMedia(constraints, callback, isAudioSendEnabled(media));
-							}
-						} else if (event.data.type == 'janusGetScreenPending') {
-							window.clearTimeout(event.data.id);
-						}
-					});
 					return;
 				}
 			}
@@ -2097,9 +2208,95 @@ function Janus(gatewayCallbacks) {
 			Janus.log("Creating offer (iceDone=" + config.iceDone + ", simulcast=" + simulcast + ")");
 		}
 		// https://code.google.com/p/webrtc/issues/detail?id=3508
-		var mediaConstraints = {
-			'offerToReceiveAudio':isAudioRecvEnabled(media),
-			'offerToReceiveVideo':isVideoRecvEnabled(media)
+		var mediaConstraints = {};
+		if(Janus.webRTCAdapter.browserDetails.browser === "firefox" && Janus.webRTCAdapter.browserDetails.version >= 59) {
+			// Firefox >= 59 uses Transceivers
+			var audioTransceiver = null, videoTransceiver = null;
+			var transceivers = config.pc.getTransceivers();
+			if(transceivers && transceivers.length > 0) {
+				for(var i in transceivers) {
+					var t = transceivers[i];
+					if((t.sender && t.sender.track && t.sender.track.kind === "audio") ||
+							(t.receiver && t.receiver.track && t.receiver.track.kind === "audio")) {
+						if(!audioTransceiver)
+							audioTransceiver = t;
+						continue;
+					}
+					if((t.sender && t.sender.track && t.sender.track.kind === "video") ||
+							(t.receiver && t.receiver.track && t.receiver.track.kind === "video")) {
+						if(!videoTransceiver)
+							videoTransceiver = t;
+						continue;
+					}
+				}
+			}
+			// Handle audio (and related changes, if any)
+			var audioSend = isAudioSendEnabled(media);
+			var audioRecv = isAudioRecvEnabled(media);
+			if(!audioSend && !audioRecv) {
+				// Audio disabled: have we removed it?
+				if(media.removeAudio && audioTransceiver) {
+					audioTransceiver.direction = "inactive";
+					Janus.log("Setting audio transceiver to inactive:", audioTransceiver);
+				}
+			} else {
+				// Take care of audio m-line
+				if(audioSend && audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "sendrecv";
+						Janus.log("Setting audio transceiver to sendrecv:", audioTransceiver);
+					}
+				} else if(audioSend && !audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "sendonly";
+						Janus.log("Setting audio transceiver to sendonly:", audioTransceiver);
+					}
+				} else if(!audioSend && audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "recvonly";
+						Janus.log("Setting audio transceiver to recvonly:", audioTransceiver);
+					} else {
+						// In theory, this is the only case where we might not have a transceiver yet
+						audioTransceiver = config.pc.addTransceiver("audio", { direction: "recvonly" });
+						Janus.log("Adding recvonly audio transceiver:", audioTransceiver);
+					}
+				}
+			}
+			// Handle video (and related changes, if any)
+			var videoSend = isVideoSendEnabled(media);
+			var videoRecv = isVideoRecvEnabled(media);
+			if(!videoSend && !videoRecv) {
+				// Video disabled: have we removed it?
+				if(media.removeVideo && videoTransceiver) {
+					videoTransceiver.direction = "inactive";
+					Janus.log("Setting video transceiver to inactive:", videoTransceiver);
+				}
+			} else {
+				// Take care of video m-line
+				if(videoSend && videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "sendrecv";
+						Janus.log("Setting video transceiver to sendrecv:", videoTransceiver);
+					}
+				} else if(videoSend && !videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "sendonly";
+						Janus.log("Setting video transceiver to sendonly:", videoTransceiver);
+					}
+				} else if(!videoSend && videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "recvonly";
+						Janus.log("Setting video transceiver to recvonly:", videoTransceiver);
+					} else {
+						// In theory, this is the only case where we might not have a transceiver yet
+						videoTransceiver = config.pc.addTransceiver("video", { direction: "recvonly" });
+						Janus.log("Adding recvonly video transceiver:", videoTransceiver);
+					}
+				}
+			}
+		} else {
+			mediaConstraints["offerToReceiveAudio"] = isAudioRecvEnabled(media);
+			mediaConstraints["offerToReceiveVideo"] = isVideoRecvEnabled(media);
 		}
 		var iceRestart = callbacks.iceRestart === true ? true : false;
 		if(iceRestart) {
@@ -2173,18 +2370,106 @@ function Janus(gatewayCallbacks) {
 			Janus.log("Creating answer (iceDone=" + config.iceDone + ", simulcast=" + simulcast + ")");
 		}
 		var mediaConstraints = null;
-		if(Janus.webRTCAdapter.browserDetails.browser == "firefox" || Janus.webRTCAdapter.browserDetails.browser == "edge") {
-			mediaConstraints = {
-				'offerToReceiveAudio':isAudioRecvEnabled(media),
-				'offerToReceiveVideo':isVideoRecvEnabled(media)
-			};
-		} else {
-			mediaConstraints = {
-				'mandatory': {
-					'OfferToReceiveAudio':isAudioRecvEnabled(media),
-					'OfferToReceiveVideo':isVideoRecvEnabled(media)
+		if(Janus.webRTCAdapter.browserDetails.browser === "firefox" && Janus.webRTCAdapter.browserDetails.version >= 59) {
+			// Firefox >= 59 uses Transceivers
+			mediaConstraints = {};
+			var audioTransceiver = null, videoTransceiver = null;
+			var transceivers = config.pc.getTransceivers();
+			if(transceivers && transceivers.length > 0) {
+				for(var i in transceivers) {
+					var t = transceivers[i];
+					if((t.sender && t.sender.track && t.sender.track.kind === "audio") ||
+							(t.receiver && t.receiver.track && t.receiver.track.kind === "audio")) {
+						if(!audioTransceiver)
+							audioTransceiver = t;
+						continue;
+					}
+					if((t.sender && t.sender.track && t.sender.track.kind === "video") ||
+							(t.receiver && t.receiver.track && t.receiver.track.kind === "video")) {
+						if(!videoTransceiver)
+							videoTransceiver = t;
+						continue;
+					}
 				}
-			};
+			}
+			// Handle audio (and related changes, if any)
+			var audioSend = isAudioSendEnabled(media);
+			var audioRecv = isAudioRecvEnabled(media);
+			if(!audioSend && !audioRecv) {
+				// Audio disabled: have we removed it?
+				if(media.removeAudio && audioTransceiver) {
+					audioTransceiver.direction = "inactive";
+					Janus.log("Setting audio transceiver to inactive:", audioTransceiver);
+				}
+			} else {
+				// Take care of audio m-line
+				if(audioSend && audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "sendrecv";
+						Janus.log("Setting audio transceiver to sendrecv:", audioTransceiver);
+					}
+				} else if(audioSend && !audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "sendonly";
+						Janus.log("Setting audio transceiver to sendonly:", audioTransceiver);
+					}
+				} else if(!audioSend && audioRecv) {
+					if(audioTransceiver) {
+						audioTransceiver.direction = "recvonly";
+						Janus.log("Setting audio transceiver to recvonly:", audioTransceiver);
+					} else {
+						// In theory, this is the only case where we might not have a transceiver yet
+						audioTransceiver = config.pc.addTransceiver("audio", { direction: "recvonly" });
+						Janus.log("Adding recvonly audio transceiver:", audioTransceiver);
+					}
+				}
+			}
+			// Handle video (and related changes, if any)
+			var videoSend = isVideoSendEnabled(media);
+			var videoRecv = isVideoRecvEnabled(media);
+			if(!videoSend && !videoRecv) {
+				// Video disabled: have we removed it?
+				if(media.removeVideo && videoTransceiver) {
+					videoTransceiver.direction = "inactive";
+					Janus.log("Setting video transceiver to inactive:", videoTransceiver);
+				}
+			} else {
+				// Take care of video m-line
+				if(videoSend && videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "sendrecv";
+						Janus.log("Setting video transceiver to sendrecv:", videoTransceiver);
+					}
+				} else if(videoSend && !videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "sendonly";
+						Janus.log("Setting video transceiver to sendonly:", videoTransceiver);
+					}
+				} else if(!videoSend && videoRecv) {
+					if(videoTransceiver) {
+						videoTransceiver.direction = "recvonly";
+						Janus.log("Setting video transceiver to recvonly:", videoTransceiver);
+					} else {
+						// In theory, this is the only case where we might not have a transceiver yet
+						videoTransceiver = config.pc.addTransceiver("video", { direction: "recvonly" });
+						Janus.log("Adding recvonly video transceiver:", videoTransceiver);
+					}
+				}
+			}
+		} else {
+			if(Janus.webRTCAdapter.browserDetails.browser == "firefox" || Janus.webRTCAdapter.browserDetails.browser == "edge") {
+				mediaConstraints = {
+					offerToReceiveAudio: isAudioRecvEnabled(media),
+					offerToReceiveVideo: isVideoRecvEnabled(media)
+				};
+			} else {
+				mediaConstraints = {
+					mandatory: {
+						OfferToReceiveAudio: isAudioRecvEnabled(media),
+						OfferToReceiveVideo: isVideoRecvEnabled(media)
+					}
+				};
+			}
 		}
 		Janus.debug(mediaConstraints);
 		// Check if this is Firefox and we've been asked to do simulcasting

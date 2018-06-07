@@ -2,7 +2,13 @@
  * \author Lorenzo Miniero <lorenzo@meetecho.com>
  * \copyright GNU General Public License v3
  * \brief  Janus Record&Play plugin
- * \details  This is a simple application that implements two different
+ * \details Check the \ref recordplay for more details.
+ *
+ * \ingroup plugins
+ * \ref plugins
+ *
+ * \page recordplay Record&Play plugin documentation
+ * This is a simple application that implements two different
  * features: it allows you to record a message you send with WebRTC in
  * the format defined in recorded.c (MJR recording) and subsequently
  * replay this recording (or other previously recorded) through WebRTC
@@ -11,7 +17,10 @@
  * This application aims at showing how easy recording frames sent by
  * a peer is, and how this recording can be re-used directly, without
  * necessarily involving a post-processing process (e.g., through the
- * tool we provide in janus-pp-rec.c).
+ * tool we provide in janus-pp-rec.c). Notice that only audio and video
+ * can be recorded and replayed in this plugin: if you're interested in
+ * recording data channel messages (which Janus and the .mjr format do
+ * support), you should use a different plugin instead.
  * 
  * The configuration process is quite easy: just choose where the
  * recordings should be saved. The same folder will also be used to list
@@ -72,7 +81,9 @@
 			"name": "<Name of the recording>",
 			"date": "<Date of the recording>",
 			"audio": "<Audio rec file, if any; optional>",
-			"video": "<Video rec file, if any; optional>"
+			"video": "<Video rec file, if any; optional>",
+			"audio_codec": "<Audio codec, if any; optional>",
+			"video_codec": "<Video codec, if any; optional>"
 		},
 		<other recordings>
 	]
@@ -114,6 +125,7 @@
 \verbatim
 {
 	"request" : "record",
+	"id" : <unique numeric ID for the recording; optional, will be chosen by the server if missing>
 	"name" : "<Pretty name for the recording>"
 }
 \endverbatim
@@ -238,9 +250,6 @@
 	"result": "done"
 }
 \endverbatim
- *
- * \ingroup plugins
- * \ref plugins
  */
 
 #include "plugin.h"
@@ -334,6 +343,7 @@ static struct janus_json_parameter configure_parameters[] = {
 };
 static struct janus_json_parameter record_parameters[] = {
 	{"name", JSON_STRING, JANUS_JSON_PARAM_REQUIRED | JANUS_JSON_PARAM_NONEMPTY},
+	{"id", JSON_INTEGER, JANUS_JSON_PARAM_POSITIVE},
 	{"filename", JSON_STRING, 0},
 	{"update", JANUS_JSON_BOOL, 0}
 };
@@ -657,6 +667,7 @@ static void janus_recordplay_message_free(janus_recordplay_message *msg) {
 #define JANUS_RECORDPLAY_ERROR_INVALID_RECORDING	417
 #define JANUS_RECORDPLAY_ERROR_INVALID_STATE		418
 #define JANUS_RECORDPLAY_ERROR_INVALID_SDP			419
+#define JANUS_RECORDPLAY_ERROR_RECORDING_EXISTS		420
 #define JANUS_RECORDPLAY_ERROR_UNKNOWN_ERROR		499
 
 
@@ -881,6 +892,7 @@ struct janus_plugin_result *janus_recordplay_handle_message(janus_plugin_session
 	janus_mutex_lock(&sessions_mutex);
 	janus_recordplay_session *session = janus_recordplay_lookup_session(handle);
 	if(!session) {
+		janus_mutex_unlock(&sessions_mutex);
 		JANUS_LOG(LOG_ERR, "No session associated with this handle...\n");
 		error_code = JANUS_RECORDPLAY_ERROR_UNKNOWN_ERROR;
 		g_snprintf(error_cause, 512, "%s", "session associated with this handle...");
@@ -1054,9 +1066,7 @@ void janus_recordplay_setup_media(janus_plugin_session *handle) {
 			janus_refcount_decrease(&session->ref);
 			/* FIXME Should we notify this back to the user somehow? */
 			JANUS_LOG(LOG_ERR, "Got error %d (%s) trying to launch the Record&Play playout thread...\n", error->code, error->message ? error->message : "??");
-			if(gateway) {
-				gateway->close_pc(session->handle);
-			}
+			gateway->close_pc(session->handle);
 		}
 	}
 	janus_refcount_decrease(&session->ref);
@@ -1108,30 +1118,28 @@ void janus_recordplay_send_rtcp_feedback(janus_plugin_session *handle, int video
 void janus_recordplay_incoming_rtp(janus_plugin_session *handle, int video, char *buf, int len) {
 	if(handle == NULL || g_atomic_int_get(&handle->stopped) || g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized))
 		return;
-	if(gateway) {
-		janus_recordplay_session *session = (janus_recordplay_session *)handle->plugin_handle;	
-		if(!session) {
-			JANUS_LOG(LOG_ERR, "No session associated with this handle...\n");
-			return;
-		}
-		if(g_atomic_int_get(&session->destroyed))
-			return;
-		if(video && session->simulcast_ssrc) {
-			/* The user is simulcasting: drop everything except the base layer */
-			janus_rtp_header *header = (janus_rtp_header *)buf;
-			uint32_t ssrc = ntohl(header->ssrc);
-			if(ssrc != session->simulcast_ssrc) {
-				JANUS_LOG(LOG_DBG, "Dropping packet (not base simulcast substream)\n");
-				return;
-			}
-		}
-		/* Are we recording? */
-		if(session->recorder) {
-			janus_recorder_save_frame(video ? session->vrc : session->arc, buf, len);
-		}
-
-		janus_recordplay_send_rtcp_feedback(handle, video, buf, len);
+	janus_recordplay_session *session = (janus_recordplay_session *)handle->plugin_handle;
+	if(!session) {
+		JANUS_LOG(LOG_ERR, "No session associated with this handle...\n");
+		return;
 	}
+	if(g_atomic_int_get(&session->destroyed))
+		return;
+	if(video && session->simulcast_ssrc) {
+		/* The user is simulcasting: drop everything except the base layer */
+		janus_rtp_header *header = (janus_rtp_header *)buf;
+		uint32_t ssrc = ntohl(header->ssrc);
+		if(ssrc != session->simulcast_ssrc) {
+			JANUS_LOG(LOG_DBG, "Dropping packet (not base simulcast substream)\n");
+			return;
+		}
+	}
+	/* Are we recording? */
+	if(session->recorder) {
+		janus_recorder_save_frame(video ? session->vrc : session->arc, buf, len);
+	}
+
+	janus_recordplay_send_rtcp_feedback(handle, video, buf, len);
 }
 
 void janus_recordplay_incoming_rtcp(janus_plugin_session *handle, int video, char *buf, int len) {
@@ -1206,17 +1214,19 @@ static void janus_recordplay_hangup_media_internal(janus_plugin_session *handle)
 	session->active = FALSE;
 	janus_mutex_lock(&session->rec_mutex);
 	if(session->arc) {
-		janus_recorder_close(session->arc);
-		JANUS_LOG(LOG_INFO, "Closed audio recording %s\n", session->arc->filename ? session->arc->filename : "??");
-		janus_recorder_destroy(session->arc);
+		janus_recorder *rc = session->arc;
+		session->arc = NULL;
+		janus_recorder_close(rc);
+		JANUS_LOG(LOG_INFO, "Closed audio recording %s\n", rc->filename ? rc->filename : "??");
+		janus_recorder_destroy(rc);
 	}
-	session->arc = NULL;
 	if(session->vrc) {
-		janus_recorder_close(session->vrc);
-		JANUS_LOG(LOG_INFO, "Closed video recording %s\n", session->vrc->filename ? session->vrc->filename : "??");
-		janus_recorder_destroy(session->vrc);
+		janus_recorder *rc = session->vrc;
+		session->vrc = NULL;
+		janus_recorder_close(rc);
+		JANUS_LOG(LOG_INFO, "Closed video recording %s\n", rc->filename ? rc->filename : "??");
+		janus_recorder_destroy(rc);
 	}
-	session->vrc = NULL;
 	janus_mutex_unlock(&session->rec_mutex);
 	if(session->recorder) {
 		if(session->recording) {
@@ -1384,11 +1394,29 @@ static void *janus_recordplay_handler(void *data) {
 				goto recdone;
 			}
 			/* If we're here, we're doing a new recording */
-			while(id == 0) {
-				id = janus_random_uint64();
-				if(g_hash_table_lookup(recordings, &id) != NULL) {
-					/* Recording ID already taken, try another one */
-					id = 0;
+			janus_mutex_lock(&recordings_mutex);
+			json_t *rec_id = json_object_get(root, "id");
+			if(rec_id) {
+				id = json_integer_value(rec_id);
+				if(id > 0) {
+					/* Let's make sure the ID doesn't exist already */
+					if(g_hash_table_lookup(recordings, &id) != NULL) {
+						/* It does... */
+						janus_mutex_unlock(&recordings_mutex);
+						JANUS_LOG(LOG_ERR, "Recording %"SCNu64" already exists!\n", id);
+						error_code = JANUS_RECORDPLAY_ERROR_RECORDING_EXISTS;
+						g_snprintf(error_cause, 512, "Recording %"SCNu64" already exists", id);
+						goto error;
+					}
+				}
+			}
+			if(id == 0) {
+				while(id == 0) {
+					id = janus_random_uint64();
+					if(g_hash_table_lookup(recordings, &id) != NULL) {
+						/* Recording ID already taken, try another one */
+						id = 0;
+					}
 				}
 			}
 			JANUS_LOG(LOG_VERB, "Starting new recording with ID %"SCNu64"\n", id);
@@ -1460,7 +1488,6 @@ static void *janus_recordplay_handler(void *data) {
 			session->recording = rec;
 			session->sdp_version = 1;	/* This needs to be increased when it changes */
 			session->sdp_sessid = janus_get_real_time();
-			janus_mutex_lock(&recordings_mutex);
 			g_hash_table_insert(recordings, janus_uint64_dup(rec->id), rec);
 			janus_mutex_unlock(&recordings_mutex);
 			/* We need to prepare an answer */
@@ -2261,8 +2288,7 @@ static void *janus_recordplay_playout_thread(void *data) {
 				/* Update payload type */
 				janus_rtp_header *rtp = (janus_rtp_header *)buffer;
 				rtp->type = audio_pt;
-				if(gateway != NULL)
-					gateway->relay_rtp(session->handle, 0, (char *)buffer, bytes);
+				gateway->relay_rtp(session->handle, 0, (char *)buffer, bytes);
 				gettimeofday(&now, NULL);
 				abefore.tv_sec = now.tv_sec;
 				abefore.tv_usec = now.tv_usec;
@@ -2302,8 +2328,7 @@ static void *janus_recordplay_playout_thread(void *data) {
 					/* Update payload type */
 					janus_rtp_header *rtp = (janus_rtp_header *)buffer;
 					rtp->type = audio_pt;
-					if(gateway != NULL)
-						gateway->relay_rtp(session->handle, 0, (char *)buffer, bytes);
+					gateway->relay_rtp(session->handle, 0, (char *)buffer, bytes);
 					asent = TRUE;
 					audio = audio->next;
 				}
@@ -2321,8 +2346,7 @@ static void *janus_recordplay_playout_thread(void *data) {
 					/* Update payload type */
 					janus_rtp_header *rtp = (janus_rtp_header *)buffer;
 					rtp->type = video_pt;
-					if(gateway != NULL)
-						gateway->relay_rtp(session->handle, 1, (char *)buffer, bytes);
+					gateway->relay_rtp(session->handle, 1, (char *)buffer, bytes);
 					video = video->next;
 				}
 				vsent = TRUE;
@@ -2366,8 +2390,7 @@ static void *janus_recordplay_playout_thread(void *data) {
 						/* Update payload type */
 						janus_rtp_header *rtp = (janus_rtp_header *)buffer;
 						rtp->type = video_pt;
-						if(gateway != NULL)
-							gateway->relay_rtp(session->handle, 1, (char *)buffer, bytes);
+						gateway->relay_rtp(session->handle, 1, (char *)buffer, bytes);
 						video = video->next;
 					}
 					vsent = TRUE;

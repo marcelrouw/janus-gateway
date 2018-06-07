@@ -2,7 +2,13 @@
  * \author Lorenzo Miniero <lorenzo@meetecho.com>
  * \copyright GNU General Public License v3
  * \brief  Janus EchoTest plugin
- * \details  This is a trivial EchoTest plugin for Janus, just used to
+ * \details Check the \ref echotest for more details.
+ *
+ * \ingroup plugins
+ * \ref plugins
+ *
+ * \page echotest EchoTest plugin documentation
+ * This is a trivial EchoTest plugin for Janus, just used to
  * showcase the plugin interface. A peer attaching to this plugin will
  * receive back the same RTP packets and RTCP messages he sends: the
  * RTCP messages, of course, would be modified on the way by the gateway
@@ -33,20 +39,29 @@
 	"video" : true|false,
 	"bitrate" : <numeric bitrate value>,
 	"record" : true|false,
-	"filename" : <base path/filename to use for the recording>
+	"filename" : <base path/filename to use for the recording>,
+	"substream" : <substream to receive (0-2), in case simulcasting is enabled>,
+	"temporal" : <temporal layers to receive (0-2), in case simulcasting is enabled>
 }
 \endverbatim
  *
  * \c audio instructs the plugin to do or do not bounce back audio
  * frames; \c video does the same for video; \c bitrate caps the
  * bandwidth to force on the browser encoding side (e.g., 128000 for
- * 128kbps).
+ * 128kbps); \c record enables or disables the recording of this peer;
+ * in case recording is enabled, \c filename allows to specify a base
+ * path/filename to use for the files (-audio.mjr, -video.mjr and -data.mjr
+ * are automatically appended); finally, in case the session uses
+ * simulcasting, \c substream and \c temporal can be used to manually
+ * pick which substream and/or temporal layer should be received back.
  * 
- * The first request must be sent together with a JSEP offer to
- * negotiate a PeerConnection: a JSEP answer will be provided with
- * the asynchronous response notification. Subsequent requests (e.g., to
- * dynamically manipulate the bitrate while testing) have to be sent
- * without any JSEP payload attached.
+ * A JSEP offer can be sent along any request to negotiate a PeerConnection:
+ * in that case, a JSEP answer will be provided with the asynchronous
+ * response notification. Other requests (e.g., to dynamically manipulate
+ * the bitrate while testing) have to be sent without any JSEP payload
+ * attached, unless you want to renegotiate a session (e.g., to add/remove
+ * a media stream, or force an ICE restart): in case of renegotiations,
+ * the same rules as the first JSEP offer apply.
  * 
  * A successful request will result in an \c ok event:
  * 
@@ -78,9 +93,6 @@
 	"result": "done"
 }
 \endverbatim
- *
- * \ingroup plugins
- * \ref plugins
  */
 
 #include "plugin.h"
@@ -772,6 +784,30 @@ void janus_echotest_slow_link(janus_plugin_session *handle, int uplink, int vide
 	janus_refcount_decrease(&session->ref);
 }
 
+static void janus_echotest_recorder_close(janus_echotest_session *session) {
+	if(session->arc) {
+		janus_recorder *rc = session->arc;
+		session->arc = NULL;
+		janus_recorder_close(rc);
+		JANUS_LOG(LOG_INFO, "Closed audio recording %s\n", rc->filename ? rc->filename : "??");
+		janus_recorder_destroy(rc);
+	}
+	if(session->vrc) {
+		janus_recorder *rc = session->vrc;
+		session->vrc = NULL;
+		janus_recorder_close(rc);
+		JANUS_LOG(LOG_INFO, "Closed video recording %s\n", rc->filename ? rc->filename : "??");
+		janus_recorder_destroy(rc);
+	}
+	if(session->drc) {
+		janus_recorder *rc = session->drc;
+		session->drc = NULL;
+		janus_recorder_close(rc);
+		JANUS_LOG(LOG_INFO, "Closed data recording %s\n", rc->filename ? rc->filename : "??");
+		janus_recorder_destroy(rc);
+	}
+}
+
 void janus_echotest_hangup_media(janus_plugin_session *handle) {
 	JANUS_LOG(LOG_INFO, "[%s-%p] No WebRTC media anymore\n", JANUS_ECHOTEST_PACKAGE, handle);
 	janus_mutex_lock(&sessions_mutex);
@@ -802,24 +838,7 @@ static void janus_echotest_hangup_media_internal(janus_plugin_session *handle) {
 	json_decref(event);
 	/* Get rid of the recorders, if available */
 	janus_mutex_lock(&session->rec_mutex);
-	if(session->arc) {
-		janus_recorder_close(session->arc);
-		JANUS_LOG(LOG_INFO, "Closed audio recording %s\n", session->arc->filename ? session->arc->filename : "??");
-		janus_recorder_destroy(session->arc);
-	}
-	session->arc = NULL;
-	if(session->vrc) {
-		janus_recorder_close(session->vrc);
-		JANUS_LOG(LOG_INFO, "Closed video recording %s\n", session->vrc->filename ? session->vrc->filename : "??");
-		janus_recorder_destroy(session->vrc);
-	}
-	session->vrc = NULL;
-	if(session->drc) {
-		janus_recorder_close(session->drc);
-		JANUS_LOG(LOG_INFO, "Closed data recording %s\n", session->drc->filename ? session->drc->filename : "??");
-		janus_recorder_destroy(session->drc);
-	}
-	session->drc = NULL;
+	janus_echotest_recorder_close(session);
 	janus_mutex_unlock(&session->rec_mutex);
 	/* Reset controls */
 	session->has_audio = FALSE;
@@ -1031,25 +1050,7 @@ static void *janus_echotest_handler(void *data) {
 			JANUS_LOG(LOG_VERB, "Recording %s (base filename: %s)\n", recording ? "enabled" : "disabled", recording_base ? recording_base : "not provided");
 			janus_mutex_lock(&session->rec_mutex);
 			if(!recording) {
-				/* Not recording (anymore?) */
-				if(session->arc) {
-					janus_recorder_close(session->arc);
-					JANUS_LOG(LOG_INFO, "Closed audio recording %s\n", session->arc->filename ? session->arc->filename : "??");
-					janus_recorder_destroy(session->arc);
-				}
-				session->arc = NULL;
-				if(session->vrc) {
-					janus_recorder_close(session->vrc);
-					JANUS_LOG(LOG_INFO, "Closed video recording %s\n", session->vrc->filename ? session->vrc->filename : "??");
-					janus_recorder_destroy(session->vrc);
-				}
-				session->vrc = NULL;
-				if(session->drc) {
-					janus_recorder_close(session->drc);
-					JANUS_LOG(LOG_INFO, "Closed data recording %s\n", session->drc->filename ? session->drc->filename : "??");
-					janus_recorder_destroy(session->drc);
-				}
-				session->drc = NULL;
+				janus_echotest_recorder_close(session);
 			} else {
 				/* We've started recording, send a PLI and go on */
 				char filename[255];

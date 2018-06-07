@@ -2,7 +2,15 @@
  * \author Lorenzo Miniero <lorenzo@meetecho.com>
  * \copyright GNU General Public License v3
  * \brief  Janus Lua plugin
- * \details  This is a plugin that implements a simple bridge to Lua
+ * \details Check the \ref lua for more details.
+ *
+ * \ingroup plugins
+ * \ingroup luapapi
+ * \ref plugins
+ * \ref luapapi
+ *
+ * \page lua Lua plugin documentation
+ * This is a plugin that implements a simple bridge to Lua
  * scripts. While the plugin implements low level stuff like media
  * manipulation, routing, recording, etc., all the logic is demanded
  * to an external Lua script. This means that the C code exposes functions
@@ -72,6 +80,7 @@
  * - \c eventsIsEnabled(): check if Event Handlers are enabled in the core;
  * - \c notifyEvent(): send an event to Event Handlers;
  * - \c closePc(): force the closure of a PeerConnection;
+ * - \c endSession(): force the detach of a plugin handle;
  * - \c configureMedium(): specify whether audio/video/data can be received/sent;
  * - \c addRecipient(): specify which user should receive a user's media;
  * - \c removeRecipient(): specify which user should not receive a user's media anymore;
@@ -166,10 +175,8 @@ timeCallback("resumeScheduler", nil, 0)
  * compact and less verbose, and as such is preferred in cases where
  * timing and opaque arguments are not needed.
  *
- * \ingroup plugins
- * \ingroup luapapi
- * \ref plugins
- * \ref luapapi
+ * Refer to the \ref luapapi section for more information on how you
+ * can register your own C functions.
  */
 
 #include <jansson.h>
@@ -338,8 +345,7 @@ static void janus_lua_relay_data_packet(gpointer data, gpointer user_data);
 /* Helper struct to address outgoing notifications, e.g., involving PeerConnections */
 typedef enum janus_lua_async_event_type {
 	janus_lua_async_event_type_none = 0,
-	janus_lua_async_event_type_pushevent,
-	janus_lua_async_event_type_closepc
+	janus_lua_async_event_type_pushevent
 } janus_lua_async_event_type;
 typedef struct janus_lua_async_event {
 	janus_lua_session *session;			/* Who this event is for */
@@ -358,9 +364,6 @@ static void *janus_lua_async_event_helper(void *data) {
 	if(asev->type == janus_lua_async_event_type_pushevent) {
 		/* Send the event */
 		janus_core->push_event(asev->session->handle, &janus_lua_plugin, asev->transaction, asev->event, asev->jsep);
-	} else if(asev->type == janus_lua_async_event_type_closepc) {
-		/* Close the PeerConnection */
-		janus_core->close_pc(asev->session->handle);
 	}
 	json_decref(asev->event);
 	json_decref(asev->jsep);
@@ -554,24 +557,34 @@ static int janus_lua_method_closepc(lua_State *s) {
 	}
 	janus_refcount_increase(&session->ref);
 	janus_mutex_unlock(&lua_sessions_mutex);
-	/* We call close_pc from a thread, instead of calling it from here directly.
-	 * In fact, a call to close_pc will result in the core invoking hangup_media
-	 * synchronously, so from the same thread that originated the close_pc call.
-	 * Since hangup_media tries to lock the Lua state mutex, in order to notify
-	 * the Lua script, doing this without a thread would result in a deadlock. */
-	janus_lua_async_event *asev = g_malloc0(sizeof(janus_lua_async_event));
-	asev->session = session;
-	asev->type = janus_lua_async_event_type_closepc;
-	GError *error = NULL;
-	g_thread_try_new("lua closepc", janus_lua_async_event_helper, asev, &error);
-	if(error != NULL) {
-		JANUS_LOG(LOG_ERR, "Got error %d (%s) trying to launch the Lua closepc thread...\n",
-			error->code, error->message ? error->message : "??");
-		janus_refcount_decrease(&session->ref);
-		g_free(asev);
+	/* Close the PeerConnection */
+	janus_core->close_pc(session->handle);
+	lua_pushnumber(s, 0);
+	return 1;
+}
+
+static int janus_lua_method_endsession(lua_State *s) {
+	/* Get the arguments from the provided state */
+	int n = lua_gettop(s);
+	if(n != 1) {
+		JANUS_LOG(LOG_ERR, "Wrong number of arguments: %d (expected 1)\n", n);
+		lua_pushnumber(s, -1);
+		return 1;
 	}
-	/* Return a success/error right away */
-	lua_pushnumber(s, error ? 1 : 0);
+	guint32 id = lua_tonumber(s, 1);
+	/* Find the session */
+	janus_mutex_lock(&lua_sessions_mutex);
+	janus_lua_session *session = g_hash_table_lookup(lua_ids, GUINT_TO_POINTER(id));
+	if(session == NULL || g_atomic_int_get(&session->destroyed)) {
+		janus_mutex_unlock(&lua_sessions_mutex);
+		lua_pushnumber(s, -1);
+		return 1;
+	}
+	janus_refcount_increase(&session->ref);
+	janus_mutex_unlock(&lua_sessions_mutex);
+	/* Close the plugin handle */
+	janus_core->end_session(session->handle);
+	lua_pushnumber(s, 0);
 	return 1;
 }
 
@@ -1025,21 +1038,24 @@ static int janus_lua_method_stoprecording(lua_State *s) {
 		const char *type = lua_tostring(s, i);
 		if(!strcasecmp(type, "audio")) {
 			if(session->arc != NULL) {
-				janus_recorder_close(session->arc);
-				janus_recorder_destroy(session->arc);
+				janus_recorder *rc = session->arc;
 				session->arc = NULL;
+				janus_recorder_close(rc);
+				janus_recorder_destroy(rc);
 			}
 		} else if(!strcasecmp(type, "video")) {
 			if(session->vrc != NULL) {
-				janus_recorder_close(session->vrc);
-				janus_recorder_destroy(session->vrc);
+				janus_recorder *rc = session->vrc;
 				session->vrc = NULL;
+				janus_recorder_close(rc);
+				janus_recorder_destroy(rc);
 			}
 		} else if(!strcasecmp(type, "data")) {
 			if(session->drc != NULL) {
-				janus_recorder_close(session->drc);
-				janus_recorder_destroy(session->drc);
+				janus_recorder *rc = session->drc;
 				session->drc = NULL;
+				janus_recorder_close(rc);
+				janus_recorder_destroy(rc);
 			}
 		}
 	}
@@ -1116,6 +1132,7 @@ int janus_lua_init(janus_callbacks *callback, const char *config_path) {
 	lua_register(lua_state, "notifyEvent", janus_lua_method_notifyevent);
 	lua_register(lua_state, "eventsIsEnabled", janus_lua_method_eventsisenabled);
 	lua_register(lua_state, "closePc", janus_lua_method_closepc);
+	lua_register(lua_state, "endSession", janus_lua_method_endsession);
 	lua_register(lua_state, "configureMedium", janus_lua_method_configuremedium);
 	lua_register(lua_state, "addRecipient", janus_lua_method_addrecipient);
 	lua_register(lua_state, "removeRecipient", janus_lua_method_removerecipient);
@@ -1778,6 +1795,8 @@ void janus_lua_incoming_data(janus_plugin_session *handle, char *buf, int len) {
 	}
 	if(g_atomic_int_get(&session->destroyed) || g_atomic_int_get(&session->hangingup))
 		return;
+	/* Are we recording? */
+	janus_recorder_save_frame(session->drc, buf, len);
 	/* Check if the Lua script wants to handle/manipulate data channel packets itself */
 	if(has_incoming_data) {
 		/* Yep, pass the data to the Lua script and return */
@@ -1795,8 +1814,6 @@ void janus_lua_incoming_data(janus_plugin_session *handle, char *buf, int len) {
 	/* Is this session allowed to send data? */
 	if(!session->send_data)
 		return;
-	/* Are we recording? */
-	janus_recorder_save_frame(session->drc, buf, len);
 	/* Get a string out of the data */
 	char *text = g_malloc0(len+1);
 	if(text == NULL) {
