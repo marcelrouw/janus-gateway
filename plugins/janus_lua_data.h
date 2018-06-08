@@ -64,12 +64,12 @@ typedef struct janus_play_recording {
 	// guint64 id;					/* Recording unique ID */
 	// char *name;					/* Name of the recording */
 	// char *date;					/* Time of the recording */
-	char *arc_file;				/* Audio file name */
-	char *arc_path;				/* Audio file path */
+	const char *arc_file;				/* Audio file name */
+	const char *arc_path;				/* Audio file path */
 	// const char *acodec;			/* Codec used for audio, if available */
 	int audio_pt;				/* Payload types to use for audio when playing recordings */
-	char *vrc_file;				/* Video file name */
-	char *vrc_path;				/* Video file path */
+	const char *vrc_file;				/* Video file name */
+	const char *vrc_path;				/* Video file path */
 	// const char *vcodec;			/* Codec used for video, if available */
 	int video_pt;				/* Payload types to use for audio when playing recordings */
 	// char *offer;				/* The SDP offer that will be sent to watchers */
@@ -113,7 +113,7 @@ typedef struct janus_lua_session {
 	janus_play_frame_packet *aframes;	/* Audio frames (for playout) */
 	janus_play_frame_packet *vframes;	/* Video frames (for playout) */
 	lua_State *lua_state;
-	char *transaction_id;
+	const char *transaction_id;
 
 	/* Reference counter */
 	janus_refcount ref;

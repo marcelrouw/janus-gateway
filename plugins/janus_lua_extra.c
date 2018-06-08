@@ -23,6 +23,8 @@
  * \ref luapapi
  */
 
+#include <sys/time.h>
+
 #include "janus_lua_data.h"
 #include "janus_lua_extra.h"
 
@@ -40,7 +42,7 @@
 static void janus_play_recording_free(const janus_refcount *recording_ref);
 janus_play_frame_packet *janus_play_get_frames(const char *dir, const char *filename);
 static void *janus_play_playout_thread(void *data);
-void lua_push_event(lua_State *state, guint32 id, char *tr, char *json);
+void lua_push_event(lua_State *state, guint32 id, const char *tr, const char *json);
 void janus_rtp_header_update2(janus_rtp_header *header, janus_rtp_switching_context *context, gboolean video, int step);
 
 
@@ -55,7 +57,7 @@ static int janus_lua_method_startplaying(lua_State *lua_state) {
 		return 1;
 	}
 	guint32 id = lua_tonumber(lua_state, 1);
-	char *tr = lua_tostring(lua_state, 2);
+	const char *tr = lua_tostring(lua_state, 2);
 
 	JANUS_LOG(LOG_INFO, "Start playing %d %s\n", id, tr);
 
@@ -191,7 +193,7 @@ static void janus_play_recording_free(const janus_refcount *recording_ref) {
 	g_free(recording);
 }
 
-void lua_push_event(lua_State *state, guint32 id, char *tr, char *json) {
+void lua_push_event(lua_State *state, guint32 id, const char *tr, const char *json) {
 	/* Can't call pushEvent straight from janus_lua_extra.c. So have to call it via lua */
 	/* Notify the Lua script */
 	lua_State *t = lua_newthread(lua_state);
@@ -589,8 +591,10 @@ static void *janus_play_playout_thread(void *data) {
 	memset(buffer, 0, 1500);
 	int bytes = 0;
 	int64_t ts_diff = 0, passed = 0;
-	int audio_pt = session->recording->audio_pt;
-	int video_pt = session->recording->video_pt;
+
+	// TODO auto handeling of akhz & vkhz????????
+	// int audio_pt = session->recording->audio_pt;
+	// int video_pt = session->recording->video_pt;
 
 	int akhz = 48;
 	// if(audio_pt == 0 || audio_pt == 8 || audio_pt == 9)
@@ -600,7 +604,7 @@ static void *janus_play_playout_thread(void *data) {
 	session->rtpctx.a_seq_reset = TRUE;
 	session->rtpctx.v_seq_reset = TRUE;
 
-	char *json = "{\"play\": \"start\"}";
+	const char *json = "{\"play\": \"start\"}";
 	lua_push_event(session->lua_state, session->id, session->transaction_id, json);
 
 	while(!g_atomic_int_get(&session->destroyed) && session->active
@@ -620,9 +624,6 @@ static void *janus_play_playout_thread(void *data) {
 					JANUS_LOG(LOG_WARN, "Didn't manage to read all the bytes we needed (%d < %d)...\n", bytes, audio->len);
 				/* Update payload type */
 				janus_rtp_header *rtp = (janus_rtp_header *)buffer;
-				uint32_t ssrc = ntohl(rtp->ssrc);
-				uint32_t timestamp = ntohl(rtp->timestamp);
-				uint16_t seq = ntohs(rtp->seq_number);
 
 				janus_rtp_header_update2(rtp, &session->rtpctx, 0, 960);
 				// rtp->type = audio_pt;
@@ -667,9 +668,6 @@ static void *janus_play_playout_thread(void *data) {
 						JANUS_LOG(LOG_WARN, "Didn't manage to read all the bytes we needed (%d < %d)...\n", bytes, audio->len);
 					/* Update payload type */
 					janus_rtp_header *rtp = (janus_rtp_header *)buffer;
-					uint32_t ssrc = ntohl(rtp->ssrc);
-					uint32_t timestamp = ntohl(rtp->timestamp);
-					uint16_t seq = ntohs(rtp->seq_number);
 
 					janus_rtp_header_update2(rtp, &session->rtpctx, 0, 960);
 
@@ -692,9 +690,7 @@ static void *janus_play_playout_thread(void *data) {
 						JANUS_LOG(LOG_WARN, "Didn't manage to read all the bytes we needed (%d < %d)...\n", bytes, video->len);
 					/* Update payload type */
 					janus_rtp_header *rtp = (janus_rtp_header *)buffer;
-					uint32_t ssrc = ntohl(rtp->ssrc);
-					uint32_t timestamp = ntohl(rtp->timestamp);
-					uint16_t seq = ntohs(rtp->seq_number);
+
 					janus_rtp_header_update2(rtp, &session->rtpctx, 1, 4500);
 
 					// rtp->type = video_pt;
@@ -742,9 +738,7 @@ static void *janus_play_playout_thread(void *data) {
 							JANUS_LOG(LOG_WARN, "Didn't manage to read all the bytes we needed (%d < %d)...\n", bytes, video->len);
 						/* Update payload type */
 						janus_rtp_header *rtp = (janus_rtp_header *)buffer;
-						uint32_t ssrc = ntohl(rtp->ssrc);
-						uint32_t timestamp = ntohl(rtp->timestamp);
-						uint16_t seq = ntohs(rtp->seq_number);
+
 						janus_rtp_header_update2(rtp, &session->rtpctx, 1, 4500);
 
 						// rtp->type = video_pt;
