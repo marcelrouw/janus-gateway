@@ -70,7 +70,6 @@ static int janus_lua_method_startplaying(lua_State *lua_state) {
 		return 1;
 	}
 	janus_refcount_increase(&session->ref);
-	janus_mutex_lock(&session->rec_mutex);
 	janus_mutex_unlock(&lua_sessions_mutex);
 
 	session->recording = g_malloc0(sizeof(janus_play_recording));
@@ -157,7 +156,6 @@ static int janus_lua_method_stopplaying(lua_State *lua_state) {
 		return 1;
 	}
 	janus_refcount_increase(&session->ref);
-	janus_mutex_lock(&session->rec_mutex);
 	janus_mutex_unlock(&lua_sessions_mutex);
 
 	if (session->recording != NULL) {
