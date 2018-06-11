@@ -73,7 +73,7 @@ static int janus_lua_method_startplaying(lua_State *lua_state) {
 	janus_mutex_lock(&session->rec_mutex);
 	janus_mutex_unlock(&lua_sessions_mutex);
 
-	session->recording = (janus_play_recording *)g_malloc0(sizeof(janus_play_recording));
+	session->recording = g_malloc0(sizeof(janus_play_recording));
 	janus_refcount_init(&session->recording->ref, janus_play_recording_free);
 	session->recording->stop_playing = FALSE;
 	/* Access the frames */
@@ -408,7 +408,7 @@ janus_play_frame_packet *janus_play_get_frames(const char *dir, const char *file
 		JANUS_LOG(LOG_HUGE, "  -- RTP packet (ssrc=%"SCNu32", pt=%"SCNu16", ext=%"SCNu16", seq=%"SCNu16", ts=%"SCNu32")\n",
 				ntohl(rtp->ssrc), rtp->type, rtp->extension, ntohs(rtp->seq_number), ntohl(rtp->timestamp));
 		/* Generate frame packet and insert in the ordered list */
-		janus_play_frame_packet *p = g_malloc0(sizeof(janus_play_frame_packet));
+		janus_play_frame_packet *p = g_malloc(sizeof(janus_play_frame_packet));
 		p->seq = ntohs(rtp->seq_number);
 		if(reset == 0) {
 			/* Simple enough... */
@@ -587,8 +587,7 @@ static void *janus_play_playout_thread(void *data) {
 	gettimeofday(&abefore, NULL);
 	gettimeofday(&vbefore, NULL);
 	janus_play_frame_packet *audio = session->aframes, *video = session->vframes;
-	char *buffer = (char *)g_malloc0(1500);
-	memset(buffer, 0, 1500);
+	char *buffer = g_malloc0(1500);
 	int bytes = 0;
 	int64_t ts_diff = 0, passed = 0;
 
@@ -611,7 +610,7 @@ static void *janus_play_playout_thread(void *data) {
 			&& !g_atomic_int_get(&rec->destroyed) && (audio || video) && session->recording->stop_playing == FALSE) {
 		if(!asent && !vsent) {
 			/* We skipped the last round, so sleep a bit (5ms) */
-			usleep(5000);
+			g_usleep(5000);
 		}
 		asent = FALSE;
 		vsent = FALSE;
